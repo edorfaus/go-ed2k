@@ -1,23 +1,27 @@
 package ed2k
 
 import (
-	"bytes"
 	"fmt"
+	"hash"
 	"testing"
 
 	"golang.org/x/crypto/md4"
 )
 
+// chunkSize is the size of each chunk of the ed2k hash, in bytes.
+const chunkSize = 9728000
+
 type Ed2k struct {
 	hashes []byte // md4 hashes of chunks
-	buff *bytes.Buffer
+	chunk  hash.Hash
+	size   int
+
 	t *testing.T
 }
 
 func New() *Ed2k {
 	return &Ed2k{
-		hashes: []byte{},
-		buff: &bytes.Buffer{},
+		chunk: md4.New(),
 	}
 }
 
@@ -26,57 +30,63 @@ func (h *Ed2k) setTest(t *testing.T) {
 }
 
 func (h *Ed2k) Write(p []byte) (int, error) {
-	n, err := h.buff.Write(p)
+	// If we won't fill the current chunk, just write what we can
+	if h.size+len(p) <= chunkSize {
+		h.size += len(p)
+		return h.chunk.Write(p)
+	}
+
+	// Fill out what remains of the current chunk
+	nn, err := h.chunk.Write(p[:chunkSize-h.size])
+	h.size += nn
 	if err != nil {
-		return n, err
+		return nn, err
+	}
+	p = p[nn:]
+
+	// If we were given more full chunks, hash them
+	for len(p) > chunkSize {
+		// At this point, the previous chunk must be full
+		h.hashes = h.chunk.Sum(h.hashes)
+		h.chunk.Reset()
+
+		n, err := h.chunk.Write(p[:chunkSize])
+		nn += n
+		if err != nil {
+			return nn, err
+		}
+		p = p[n:]
 	}
 
-	for h.buff.Len() >= h.BlockSize() {
-		c := make([]byte, h.BlockSize())
-		_, err = h.buff.Read(c)
-		if err != nil {
-			return 0, err
-		}
+	// If there's anything left, it's a partial chunk
+	if len(p) > 0 {
+		// At this point, the previous chunk must be full
+		h.hashes = h.chunk.Sum(h.hashes)
+		h.chunk.Reset()
 
-		cmd4 := md4.New()
-		_, err = cmd4.Write(c)
+		n, err := h.chunk.Write(p)
+		h.size = n
+		nn += n
 		if err != nil {
-			return 0, err
+			return nn, err
 		}
-
-		h.hashes = append(h.hashes, cmd4.Sum([]byte{})...)
-		//h.hashes = cmd4.Sum(h.hashes)
 	}
 
-
-	if h.buff.Len() > 0 {
-		overflow := h.buff.Bytes()
-		//h.buff = bytes.NewBuffer(h.buff.Bytes())
-		h.buff.Reset()
-		_, err := h.buff.Write(overflow)
-		if err != nil {
-			return 0, err
-		}
-	} else {
-		h.buff.Reset()
-	}
-
-	return n, nil
+	return nn, nil
 }
 
 func (h *Ed2k) Sum(b []byte) []byte {
-	leftover, hashes, err := h.currentHash()
-	if err != nil {
-		panic(err)
+	if len(h.hashes) == 0 {
+		return h.chunk.Sum(b)
 	}
 
-	if !leftover && len(hashes) == h.Size() {
-		//return fmt.Sprintf("%x", hashes), nil
-		return append(b, hashes...)
-	}
+	hashes := h.chunk.Sum(h.hashes)
+
+	// Keep the new buffer for later resets, in case it was resized
+	h.hashes = hashes[:len(h.hashes)]
 
 	hsh := md4.New()
-	_, err = hsh.Write(hashes)
+	_, err := hsh.Write(hashes)
 	if err != nil {
 		panic(err)
 	}
@@ -85,8 +95,9 @@ func (h *Ed2k) Sum(b []byte) []byte {
 }
 
 func (h *Ed2k) Reset() {
-	h.buff.Reset()
-	h.hashes = []byte{}
+	h.hashes = h.hashes[:0]
+	h.chunk.Reset()
+	h.size = 0
 }
 
 func (h *Ed2k) Size() int {
@@ -94,38 +105,24 @@ func (h *Ed2k) Size() int {
 }
 
 func (h *Ed2k) BlockSize() int {
-	return 9728000
-}
-
-func (h *Ed2k) currentHash() (bool, []byte, error) {
-	if h.buff.Len() != 0 {
-		b := h.buff.Bytes()
-		cmd4 := md4.New()
-		_, err := cmd4.Write(b)
-		if err != nil {
-			return true, nil, err
-		}
-
-		return true, append(h.hashes, cmd4.Sum([]byte{})...), nil
-	}
-	return false, h.hashes, nil
+	return chunkSize
 }
 
 func (h *Ed2k) SumBlue() (string, error) {
-	leftover, hashes, err := h.currentHash()
-	if err != nil {
-		return "", err
+	if len(h.hashes) == 0 {
+		return fmt.Sprintf("%x", h.chunk.Sum(nil)), nil
 	}
 
-	if !leftover && len(hashes) == h.Size() {
-		return fmt.Sprintf("%x", hashes), nil
-	}
+	hashes := h.chunk.Sum(h.hashes)
+
+	// Keep the new buffer for later resets, in case it was resized
+	h.hashes = hashes[:len(h.hashes)]
 
 	hsh := md4.New()
 	if h.t != nil {
 		h.t.Logf("bluehashes: %X", hashes)
 	}
-	_, err = hsh.Write(hashes)
+	_, err := hsh.Write(hashes)
 	if err != nil {
 		return "", err
 	}
@@ -136,26 +133,26 @@ func (h *Ed2k) SumBlue() (string, error) {
 
 // The "bugged" version of the hash.  See https://wiki.anidb.net/Ed2k-hash#How_is_an_ed2k_hash_calculated_exactly? for more info.
 func (h *Ed2k) SumRed() (string, error) {
-	leftover, hashes, err := h.currentHash()
-	if err != nil {
-		return "", err
+	if len(h.hashes) == 0 && h.size != chunkSize {
+		return fmt.Sprintf("%x", h.chunk.Sum(nil)), nil
 	}
 
-	hsh := md4.New()
-	if !leftover {
-		lsh := md4.New()
-		_, err = lsh.Write([]byte{})
-		if err != nil {
-			return "", err
-		}
-		hashes = append(hashes, lsh.Sum([]byte{})...)
+	hashes := h.chunk.Sum(h.hashes)
+
+	if h.size == chunkSize {
+		hashes = md4.New().Sum(hashes)
 	}
+
+	// Keep the new buffer for later resets, in case it was resized
+	h.hashes = hashes[:len(h.hashes)]
+
+	hsh := md4.New()
 
 	if h.t != nil {
 		h.t.Logf("red hashes: %X", hashes)
 	}
 
-	_, err = hsh.Write(hashes)
+	_, err := hsh.Write(hashes)
 	if err != nil {
 		return "", err
 	}

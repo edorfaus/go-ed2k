@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-const chunkSize = 9728000
-
 // Expected hashes for one complete chunk of zeroes
 const zeroOneChunkBlue = "d7def262a127cd79096a108e7a9fc138"
 const zeroOneChunkRed = "fc21d9af828f92a8df64beac3357425d"
@@ -154,6 +152,9 @@ func TestSizes(t *testing.T) {
 	}
 	if bs != chunkSize {
 		t.Errorf("Bad BlockSize(): expected %v, got %v", chunkSize, bs)
+	}
+	if chunkSize != 9728000 {
+		t.Errorf("Bad chunkSize: expected %v, got %v", 9728000, chunkSize)
 	}
 }
 
