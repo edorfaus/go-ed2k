@@ -1,7 +1,6 @@
 package ed2k
 
 import (
-	"fmt"
 	"hash"
 	"testing"
 
@@ -10,6 +9,9 @@ import (
 
 // chunkSize is the size of each chunk of the ed2k hash, in bytes.
 const chunkSize = 9728000
+
+// emptyMD4 is the MD4 hash of nothing, needed by SumRed in some cases.
+var emptyMD4 = md4.New().Sum(nil)
 
 type Ed2k struct {
 	hashes []byte // md4 hashes of chunks
@@ -110,7 +112,7 @@ func (h *Ed2k) BlockSize() int {
 
 func (h *Ed2k) SumBlue() (string, error) {
 	if len(h.hashes) == 0 {
-		return fmt.Sprintf("%x", h.chunk.Sum(nil)), nil
+		return h.toHex(h.chunk), nil
 	}
 
 	hashes := h.chunk.Sum(h.hashes)
@@ -127,20 +129,19 @@ func (h *Ed2k) SumBlue() (string, error) {
 		return "", err
 	}
 
-	bhash := hsh.Sum([]byte{})
-	return fmt.Sprintf("%x", bhash), nil
+	return h.toHex(hsh), nil
 }
 
 // The "bugged" version of the hash.  See https://wiki.anidb.net/Ed2k-hash#How_is_an_ed2k_hash_calculated_exactly? for more info.
 func (h *Ed2k) SumRed() (string, error) {
 	if len(h.hashes) == 0 && h.size != chunkSize {
-		return fmt.Sprintf("%x", h.chunk.Sum(nil)), nil
+		return h.toHex(h.chunk), nil
 	}
 
 	hashes := h.chunk.Sum(h.hashes)
 
 	if h.size == chunkSize {
-		hashes = md4.New().Sum(hashes)
+		hashes = append(hashes, emptyMD4...)
 	}
 
 	// Keep the new buffer for later resets, in case it was resized
@@ -157,6 +158,34 @@ func (h *Ed2k) SumRed() (string, error) {
 		return "", err
 	}
 
-	bhash := hsh.Sum([]byte{})
-	return fmt.Sprintf("%x", bhash), nil
+	return h.toHex(hsh), nil
+}
+
+// toHex converts an MD4 sum into a string. The given hash must be MD4.
+//
+// This does the same operation as fmt.Sprintf("%x", hsh.Sum(nil)), but
+// with fewer allocations. Honestly, it's likely premature optimization.
+func (h *Ed2k) toHex(hsh hash.Hash) string {
+	// buf escapes into hsh.Sum, so we can't avoid an allocation for it
+	// simply by using an array (like for str below). However, if there
+	// is enough space left in the hashes slice, we can use that, since
+	// it's already heap-allocated and thus causes no extra allocations.
+	var buf []byte
+	if cap(h.hashes) >= len(h.hashes) + 16 {
+		buf = h.hashes[len(h.hashes):len(h.hashes)+16]
+	} else {
+		buf = make([]byte, 16)
+	}
+
+	hsh.Sum(buf[:0])
+
+	const hex = "0123456789abcdef"
+	var str [32]byte
+	for i, j := 0, 0; i < 16; i++ {
+		b := buf[i]
+		str[j], str[j+1] = hex[b>>4], hex[b&0x0F]
+		j += 2
+	}
+
+	return string(str[:])
 }

@@ -11,13 +11,18 @@ func BenchmarkNewSum(b *testing.B) {
 		block := zf[:blockSize]
 		blockCount := totSize / blockSize
 		outBuf := make([]byte, 0, 16)
+		_ = outBuf
 		return func(b *testing.B) {
 			for n := 0; n < b.N; n++ {
 				h := New()
+				//h.Reset()
 				for i := 0; i < blockCount; i++ {
 					h.Write(block)
 				}
-				h.Sum(outBuf)
+				//h.Sum(outBuf)
+				//h.toHex(h.chunk)
+				h.SumBlue()
+				//h.SumRed()
 			}
 		}
 	}
